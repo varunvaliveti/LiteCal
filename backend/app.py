@@ -22,6 +22,7 @@ def chat():
     user_message = data.get('message', '')
     image_data = data.get('image', None)
     audio_data = data.get('audio', None)
+    chat_history = data.get('history', None)  # Get chat history for RAG
     
     if not user_message and not image_data and not audio_data:
         return jsonify({'error': 'No message, image, or audio provided'}), 400
@@ -29,6 +30,20 @@ def chat():
     try:
         # Initialize content_parts outside the conditional blocks
         content_parts = []
+        
+        # If chat history is provided, use it as context for RAG
+        if chat_history:
+            # Add a system message to provide context from previous conversations
+            context_prompt = f"""
+            You are LiteCal, an AI assistant. The user has had previous conversations with you.
+            Below is the relevant history of your past conversations with this user. 
+            Use this context to provide more personalized and consistent responses.
+            
+            {chat_history}
+            
+            Now, respond to the user's current message:
+            """
+            content_parts.append(context_prompt)
         
         # Handle image if provided
         if image_data:

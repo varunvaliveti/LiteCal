@@ -2,13 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { 
   View, 
   TextInput, 
-  Button, 
-  FlatList, 
   StyleSheet, 
   Text, 
   ActivityIndicator,
   TouchableOpacity,
-  Image
+  Image,
+  FlatList
 } from 'react-native';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
@@ -17,16 +16,11 @@ import { Audio } from 'expo-av';
 import { FontAwesome } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/hooks/useAuth';
-
-// Define types for our message items
-interface Message {
-  text: string;
-  isUser: boolean;
-  image?: string; // Base64 image data
-}
+import { useChat, ChatMessage } from '@/hooks/useChat';
+import { addDoc, serverTimestamp } from 'firebase/firestore';
+import { messagesRef } from '@/constants/Firebase';
 
 export default function HomeScreen() {
-  const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
@@ -34,7 +28,8 @@ export default function HomeScreen() {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [audioData, setAudioData] = useState<string | null>(null);
 
-  const { user, logout } = useAuth();
+  const { user, logout, isLoading: authLoading } = useAuth();
+  const { messages, sendMessage, loading: chatLoading, error, getContextForRAG } = useChat();
   const router = useRouter();
 
   // Update with your server's address
@@ -52,10 +47,10 @@ export default function HomeScreen() {
     };
     
     // Only check after initial loading is complete
-    if (!isLoading) {
+    if (!authLoading) {
       checkAuth();
     }
-  }, [user, isLoading]);
+  }, [user, authLoading]);
 
   // Request permissions when component mounts
   useEffect(() => {
@@ -153,27 +148,36 @@ export default function HomeScreen() {
     }
   };
 
-  // Function to send the message to the API
-  const sendMessage = async () => {
+  // Function to send the message to the API with RAG context
+  const handleSendMessage = async () => {
     if (!inputText.trim() && !selectedImage && !audioData) return;
+    if (!user) return;
 
-    // Add the user's message to the chat
-    const userMessage: Message = {
-      text: inputText,
-      isUser: true,
-      image: selectedImage || undefined
-    };
-    
-    setMessages(prevMessages => [...prevMessages, userMessage]);
-    setInputText('');
     setIsLoading(true);
     
     try {
+      // Get message text
+      const messageText = inputText.trim();
+      
+      // Send message to Firebase
+      await sendMessage(
+        messageText || "I sent a file", 
+        selectedImage || undefined, 
+        audioData ? true : false
+      );
+      
+      // Clear input
+      setInputText('');
+      
+      // Get conversation history for RAG
+      const chatHistory = await getContextForRAG();
+      
       // Prepare data to send to the API
       const data = {
-        message: inputText,
+        message: messageText,
         image: selectedImage,
-        audio: audioData
+        audio: audioData,
+        history: chatHistory // Include RAG context
       };
       
       // Clear the image and audio after sending
@@ -195,31 +199,29 @@ export default function HomeScreen() {
       
       const result = await response.json();
       
-      // Add the AI's response to the chat
-      const aiMessage: Message = {
-        text: result.message,
-        isUser: false,
-      };
-      
-      setMessages(prevMessages => [...prevMessages, aiMessage]);
+      // Save the AI's response to Firebase
+      if (user) {
+        await addDoc(messagesRef, {
+          text: result.message,
+          isUser: false,
+          userId: user.uid,
+          timestamp: serverTimestamp(),
+        });
+      }
     } catch (error) {
       console.error('Error sending message:', error);
       
-      // Add error message
-      setMessages(prevMessages => [
-        ...prevMessages, 
-        { 
-          text: "Sorry, I couldn't process your request. Please try again.",
-          isUser: false 
-        }
-      ]);
+      // Don't add error message to Firebase, just show temporarily
+      setTimeout(() => {
+        setIsLoading(false);
+      }, 1000);
     } finally {
       setIsLoading(false);
     }
   };
 
   // Render each message in the chat
-  const renderMessage = ({ item }: { item: Message }) => {
+  const renderMessage = ({ item }: { item: ChatMessage }) => {
     return (
       <View style={[
         styles.messageBubble, 
@@ -243,17 +245,24 @@ export default function HomeScreen() {
       </View>
       
       {/* Message list */}
-      <FlatList
-        data={messages}
-        renderItem={renderMessage}
-        keyExtractor={(_, index) => index.toString()}
-        style={styles.messageList}
-        contentContainerStyle={styles.messageListContent}
-      />
+      {chatLoading && messages.length === 0 ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#4a6fff" />
+          <Text style={styles.loadingText}>Loading conversations...</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={messages}
+          renderItem={renderMessage}
+          keyExtractor={(item) => item.id || Math.random().toString()}
+          style={styles.messageList}
+          contentContainerStyle={styles.messageListContent}
+        />
+      )}
       
       {/* Loading indicator */}
       {isLoading && (
-        <View style={styles.loadingContainer}>
+        <View style={styles.loadingIndicator}>
           <ActivityIndicator size="large" color="#4a6fff" />
         </View>
       )}
@@ -304,8 +313,8 @@ export default function HomeScreen() {
         
         <TouchableOpacity 
           style={[styles.sendButton, (!inputText.trim() && !selectedImage && !audioData) ? styles.disabledButton : null]}
-          onPress={sendMessage}
-          disabled={!inputText.trim() && !selectedImage && !audioData}
+          onPress={handleSendMessage}
+          disabled={!inputText.trim() && !selectedImage && !audioData || isLoading}
         >
           <FontAwesome name="send" size={20} color="#fff" />
         </TouchableOpacity>
@@ -367,7 +376,19 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   loadingContainer: {
-    padding: 15,
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 10,
+    color: '#888',
+  },
+  loadingIndicator: {
+    position: 'absolute',
+    bottom: 100,
+    left: 0,
+    right: 0,
     alignItems: 'center',
   },
   imagePreviewContainer: {
