@@ -21,6 +21,7 @@ export interface ChatMessage {
   timestamp: any;
   image?: string; // Base64 image data
   audioProcessed?: boolean; // Whether this message came from audio
+  isEvent?: boolean; // Whether this message is a calendar event
 }
 
 interface UseChatReturn {

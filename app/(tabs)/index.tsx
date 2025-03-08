@@ -7,7 +7,9 @@ import {
   ActivityIndicator,
   TouchableOpacity,
   Image,
-  FlatList
+  FlatList,
+  KeyboardAvoidingView,
+  Platform
 } from 'react-native';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
@@ -19,6 +21,27 @@ import { useAuth } from '@/hooks/useAuth';
 import { useChat, ChatMessage } from '@/hooks/useChat';
 import { addDoc, serverTimestamp } from 'firebase/firestore';
 import { messagesRef } from '@/constants/Firebase';
+import EventPreview from '@/components/EventPreview';
+
+// Define interface for calendar event data
+interface EventData {
+  event_title: string;
+  start_date: string;
+  start_time: string;
+  end_date?: string;
+  end_time?: string;
+  location?: string;
+  description?: string;
+}
+
+// Define interface for API response with event data
+interface CalendarEventResponse {
+  message: string;
+  is_event: boolean;
+  event_data: EventData;
+  ics_file?: string;
+  requires_clarification?: boolean;
+}
 
 export default function HomeScreen() {
   const [inputText, setInputText] = useState('');
@@ -27,6 +50,7 @@ export default function HomeScreen() {
   const [isRecording, setIsRecording] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [audioData, setAudioData] = useState<string | null>(null);
+  const [currentEvent, setCurrentEvent] = useState<{ data: EventData; ics: string } | null>(null);
 
   const { user, logout, isLoading: authLoading } = useAuth();
   const { messages, sendMessage, loading: chatLoading, error, getContextForRAG } = useChat();
@@ -148,12 +172,31 @@ export default function HomeScreen() {
     }
   };
 
+  // Function to save an AI message to Firestore
+  const saveAIResponse = async (text: string, isEvent: boolean = false) => {
+    if (!user) return;
+    
+    try {
+      await addDoc(messagesRef, {
+        text,
+        isUser: false,
+        userId: user.uid,
+        timestamp: serverTimestamp(),
+        isEvent
+      });
+    } catch (err) {
+      console.error("Error saving AI response: ", err);
+    }
+  };
+
   // Function to send the message to the API with RAG context
   const handleSendMessage = async () => {
     if (!inputText.trim() && !selectedImage && !audioData) return;
     if (!user) return;
 
     setIsLoading(true);
+    // Reset current event
+    setCurrentEvent(null);
     
     try {
       // Get message text
@@ -199,14 +242,23 @@ export default function HomeScreen() {
       
       const result = await response.json();
       
-      // Save the AI's response to Firebase
-      if (user) {
-        await addDoc(messagesRef, {
-          text: result.message,
-          isUser: false,
-          userId: user.uid,
-          timestamp: serverTimestamp(),
+      // Check if the response contains calendar event data
+      if (result.is_event && !result.requires_clarification) {
+        // It's a calendar event
+        const eventData = result.event_data;
+        const icsFile = result.ics_file;
+        
+        // Save the event response to Firebase
+        await saveAIResponse(result.message, true);
+        
+        // Show the event preview
+        setCurrentEvent({
+          data: eventData,
+          ics: icsFile
         });
+      } else {
+        // Regular response
+        await saveAIResponse(result.message);
       }
     } catch (error) {
       console.error('Error sending message:', error);
@@ -244,81 +296,95 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
       
-      {/* Message list */}
-      {chatLoading && messages.length === 0 ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#4a6fff" />
-          <Text style={styles.loadingText}>Loading conversations...</Text>
-        </View>
-      ) : (
-        <FlatList
-          data={messages}
-          renderItem={renderMessage}
-          keyExtractor={(item) => item.id || Math.random().toString()}
-          style={styles.messageList}
-          contentContainerStyle={styles.messageListContent}
-        />
-      )}
-      
-      {/* Loading indicator */}
-      {isLoading && (
-        <View style={styles.loadingIndicator}>
-          <ActivityIndicator size="large" color="#4a6fff" />
-        </View>
-      )}
-      
-      {/* Selected image preview */}
-      {selectedImage && (
-        <View style={styles.imagePreviewContainer}>
-          <Image source={{ uri: selectedImage }} style={styles.imagePreview} />
+      <KeyboardAvoidingView 
+        style={styles.chatContainer}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={100}
+      >
+        {/* Message list */}
+        {chatLoading && messages.length === 0 ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#4a6fff" />
+            <Text style={styles.loadingText}>Loading conversations...</Text>
+          </View>
+        ) : (
+          <FlatList
+            data={messages}
+            renderItem={renderMessage}
+            keyExtractor={(item) => item.id || Math.random().toString()}
+            style={styles.messageList}
+            contentContainerStyle={styles.messageListContent}
+          />
+        )}
+        
+        {/* Loading indicator */}
+        {isLoading && (
+          <View style={styles.loadingIndicator}>
+            <ActivityIndicator size="large" color="#4a6fff" />
+          </View>
+        )}
+        
+        {/* Current calendar event preview */}
+        {currentEvent && (
+          <EventPreview 
+            eventData={currentEvent.data} 
+            icsFile={currentEvent.ics} 
+          />
+        )}
+        
+        {/* Selected image preview */}
+        {selectedImage && (
+          <View style={styles.imagePreviewContainer}>
+            <Image source={{ uri: selectedImage }} style={styles.imagePreview} />
+            <TouchableOpacity 
+              style={styles.removeImageButton}
+              onPress={() => setSelectedImage(null)}
+            >
+              <FontAwesome name="times-circle" size={24} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        )}
+        
+        {/* Input area */}
+        <View style={styles.inputContainer}>
+          <TouchableOpacity style={styles.mediaButton} onPress={pickImage}>
+            <FontAwesome name="image" size={20} color="#4a6fff" />
+          </TouchableOpacity>
+          
+          <TouchableOpacity style={styles.mediaButton} onPress={takePhoto}>
+            <FontAwesome name="camera" size={20} color="#4a6fff" />
+          </TouchableOpacity>
+          
           <TouchableOpacity 
-            style={styles.removeImageButton}
-            onPress={() => setSelectedImage(null)}
+            style={styles.mediaButton}
+            onPressIn={startRecording}
+            onPressOut={stopRecording}
           >
-            <FontAwesome name="times-circle" size={24} color="#fff" />
+            <FontAwesome 
+              name="microphone" 
+              size={20} 
+              color={isRecording ? "#ff4a4a" : "#4a6fff"} 
+            />
+          </TouchableOpacity>
+          
+          <TextInput
+            style={styles.input}
+            value={inputText}
+            onChangeText={setInputText}
+            placeholder="Type a message or an event to add to calendar..."
+            placeholderTextColor="#888"
+            multiline
+          />
+          
+          <TouchableOpacity 
+            style={[styles.sendButton, (!inputText.trim() && !selectedImage && !audioData) ? styles.disabledButton : null]}
+            onPress={handleSendMessage}
+            disabled={!inputText.trim() && !selectedImage && !audioData || isLoading}
+          >
+            <FontAwesome name="send" size={20} color="#fff" />
           </TouchableOpacity>
         </View>
-      )}
-      
-      {/* Input area */}
-      <View style={styles.inputContainer}>
-        <TouchableOpacity style={styles.mediaButton} onPress={pickImage}>
-          <FontAwesome name="image" size={20} color="#4a6fff" />
-        </TouchableOpacity>
-        
-        <TouchableOpacity style={styles.mediaButton} onPress={takePhoto}>
-          <FontAwesome name="camera" size={20} color="#4a6fff" />
-        </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.mediaButton}
-          onPressIn={startRecording}
-          onPressOut={stopRecording}
-        >
-          <FontAwesome 
-            name="microphone" 
-            size={20} 
-            color={isRecording ? "#ff4a4a" : "#4a6fff"} 
-          />
-        </TouchableOpacity>
-        
-        <TextInput
-          style={styles.input}
-          value={inputText}
-          onChangeText={setInputText}
-          placeholder="Type a message..."
-          placeholderTextColor="#888"
-          multiline
-        />
-        
-        <TouchableOpacity 
-          style={[styles.sendButton, (!inputText.trim() && !selectedImage && !audioData) ? styles.disabledButton : null]}
-          onPress={handleSendMessage}
-          disabled={!inputText.trim() && !selectedImage && !audioData || isLoading}
-        >
-          <FontAwesome name="send" size={20} color="#fff" />
-        </TouchableOpacity>
-      </View>
+      </KeyboardAvoidingView>
     </ThemedView>
   );
 }
@@ -326,7 +392,6 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    padding: 10,
   },
   header: {
     flexDirection: 'row',
@@ -342,6 +407,10 @@ const styles = StyleSheet.create({
   },
   logoutButton: {
     padding: 8,
+  },
+  chatContainer: {
+    flex: 1,
+    padding: 10,
   },
   messageList: {
     flex: 1,
@@ -413,7 +482,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 10,
     paddingVertical: 8,
-    marginBottom: 20,
+    marginTop: 5,
   },
   mediaButton: {
     padding: 10,
