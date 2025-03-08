@@ -15,6 +15,8 @@ import { ThemedView } from '@/components/ThemedView';
 import * as ImagePicker from 'expo-image-picker';
 import { Audio } from 'expo-av';
 import { FontAwesome } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
+import { useAuth } from '@/hooks/useAuth';
 
 // Define types for our message items
 interface Message {
@@ -32,8 +34,28 @@ export default function HomeScreen() {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [audioData, setAudioData] = useState<string | null>(null);
 
+  const { user, logout } = useAuth();
+  const router = useRouter();
+
   // Update with your server's address
   const API_URL = 'http://127.0.0.1:5001/chat';
+
+  // Check if user is authenticated
+  useEffect(() => {
+    const checkAuth = () => {
+      if (!user) {
+        // Use setTimeout to avoid navigation during render
+        setTimeout(() => {
+          router.replace('/login');
+        }, 0);
+      }
+    };
+    
+    // Only check after initial loading is complete
+    if (!isLoading) {
+      checkAuth();
+    }
+  }, [user, isLoading]);
 
   // Request permissions when component mounts
   useEffect(() => {
@@ -44,20 +66,24 @@ export default function HomeScreen() {
     })();
   }, []);
 
+  const handleLogout = async () => {
+    try {
+      await logout();
+      router.replace('/login');
+    } catch (error) {
+      console.error("Logout failed:", error);
+    }
+  };
+
   // Start recording function
   const startRecording = async () => {
     try {
       // First make sure any existing recording is stopped and unloaded
       if (recording) {
         await recording.stopAndUnloadAsync();
-        setRecording(null);
       }
-      
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
-      
+
+      // Need to set up the recording object
       const { recording: newRecording } = await Audio.Recording.createAsync(
         Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
@@ -68,218 +94,221 @@ export default function HomeScreen() {
       console.error('Failed to start recording', err);
     }
   };
-  
+
+  // Stop recording function
   const stopRecording = async () => {
     if (!recording) return;
-    
-    setIsRecording(false);
-    
+
     try {
       await recording.stopAndUnloadAsync();
+      setIsRecording(false);
       
       const uri = recording.getURI();
-      setRecording(null);
+      if (!uri) return;
       
-      if (uri) {
-        // Set a loading message
-        setInputText("Processing your voice message...");
-        
-        // Convert audio file to base64
-        const response = await fetch(uri);
-        const blob = await response.blob();
-        
-        return new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            const base64data = reader.result;
-            // Store the audio data to send with the next message
-            setAudioData(base64data as string);
-            setInputText("Voice message ready to send...");
-            resolve(base64data);
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-      }
-    } catch (error) {
-      console.error("Error stopping recording:", error);
-      setInputText("Error processing voice. Please try again.");
+      // Get the raw data of the recording as base64
+      const fileData = await fetch(uri);
+      const blob = await fileData.blob();
+      
+      // Convert to base64
+      const reader = new FileReader();
+      reader.readAsDataURL(blob);
+      reader.onloadend = () => {
+        const base64data = reader.result as string;
+        setAudioData(base64data);
+      };
+    } catch (err) {
+      console.error('Failed to stop recording', err);
     }
   };
 
-  // Pick image function
+  // Image picker function
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
       aspect: [4, 3],
-      quality: 1,
+      quality: 0.8,
       base64: true,
     });
 
     if (!result.canceled && result.assets && result.assets[0].base64) {
-      setSelectedImage(`data:image/jpeg;base64,${result.assets[0].base64}`);
+      const base64Image = `data:image/jpeg;base64,${result.assets[0].base64}`;
+      setSelectedImage(base64Image);
     }
   };
 
-  // Take photo function
+  // Camera function
   const takePhoto = async () => {
     const result = await ImagePicker.launchCameraAsync({
       allowsEditing: true,
       aspect: [4, 3],
-      quality: 1,
+      quality: 0.8,
       base64: true,
     });
 
     if (!result.canceled && result.assets && result.assets[0].base64) {
-      setSelectedImage(`data:image/jpeg;base64,${result.assets[0].base64}`);
+      const base64Image = `data:image/jpeg;base64,${result.assets[0].base64}`;
+      setSelectedImage(base64Image);
     }
   };
 
-  // Clear selected image
-  const clearImage = () => {
-    setSelectedImage(null);
-  };
+  // Function to send the message to the API
+  const sendMessage = async () => {
+    if (!inputText.trim() && !selectedImage && !audioData) return;
 
-  // Send message function
-  const handleSend = async () => {
-    if (isRecording && recording) {
-      await stopRecording();
-    }
-
-
-    if ((inputText.trim() || selectedImage || audioData) && !isLoading) {
-      // Add user message to chat
-      const userMessage = { 
-        text: inputText || "I sent a voice message", 
-        isUser: true,
-        image: selectedImage || undefined
+    // Add the user's message to the chat
+    const userMessage: Message = {
+      text: inputText,
+      isUser: true,
+      image: selectedImage || undefined
+    };
+    
+    setMessages(prevMessages => [...prevMessages, userMessage]);
+    setInputText('');
+    setIsLoading(true);
+    
+    try {
+      // Prepare data to send to the API
+      const data = {
+        message: inputText,
+        image: selectedImage,
+        audio: audioData
       };
       
-      setMessages(currentMessages => [...currentMessages, userMessage]);
-      setInputText('');
+      // Clear the image and audio after sending
       setSelectedImage(null);
-      setIsLoading(true);
+      setAudioData(null);
       
-      try {
-        // Prepare request body
-        const requestBody: any = { message: userMessage.text };
-        if (userMessage.image) {
-          requestBody.image = userMessage.image;
-        }
-        if (audioData) {
-          requestBody.audio = audioData;
-          // Clear audio data after sending
-          setAudioData(null);
-        }
-        
-        // Send request to Python backend
-        const response = await fetch(API_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(requestBody),
-        });
-        
-        const data = await response.json();
-        
-        if (!response.ok) {
-          throw new Error(data.error || 'Something went wrong');
-        }
-        
-        // Add AI response to chat
-        setMessages(currentMessages => [
-          ...currentMessages, 
-          { text: data.message, isUser: false }
-        ]);
-      } catch (error) {
-        console.error('Error:', error);
-        // Show error message in chat
-        setMessages(currentMessages => [
-          ...currentMessages, 
-          { text: "Sorry, I couldn't process that request. Please try again.", isUser: false }
-        ]);
-      } finally {
-        setIsLoading(false);
+      // Call your API
+      const response = await fetch(API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      });
+      
+      if (!response.ok) {
+        throw new Error('API request failed');
       }
+      
+      const result = await response.json();
+      
+      // Add the AI's response to the chat
+      const aiMessage: Message = {
+        text: result.message,
+        isUser: false,
+      };
+      
+      setMessages(prevMessages => [...prevMessages, aiMessage]);
+    } catch (error) {
+      console.error('Error sending message:', error);
+      
+      // Add error message
+      setMessages(prevMessages => [
+        ...prevMessages, 
+        { 
+          text: "Sorry, I couldn't process your request. Please try again.",
+          isUser: false 
+        }
+      ]);
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const renderItem = ({ item }: { item: Message }) => (
-    <View style={[styles.messageBubble, item.isUser ? styles.userBubble : styles.aiBubble]}>
-      {item.image && (
-        <Image 
-          source={{ uri: item.image }} 
-          style={styles.messageImage} 
-          resizeMode="cover"
-        />
-      )}
-      <ThemedText style={[styles.messageText, item.isUser ? styles.userText : styles.aiText]}>
-        {item.text}
-      </ThemedText>
-    </View>
-  );
+  // Render each message in the chat
+  const renderMessage = ({ item }: { item: Message }) => {
+    return (
+      <View style={[
+        styles.messageBubble, 
+        item.isUser ? styles.userMessage : styles.aiMessage
+      ]}>
+        {item.image && (
+          <Image source={{ uri: item.image }} style={styles.messageImage} />
+        )}
+        <ThemedText style={styles.messageText}>{item.text}</ThemedText>
+      </View>
+    );
+  };
 
   return (
     <ThemedView style={styles.container}>
-      <ThemedView style={styles.header}>
-        <ThemedText style={styles.headerText}>LyteCal Assistant</ThemedText>
-      </ThemedView>
+      <View style={styles.header}>
+        <ThemedText style={styles.headerTitle}>LiteCal</ThemedText>
+        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+          <FontAwesome name="sign-out" size={24} color="#fff" />
+        </TouchableOpacity>
+      </View>
       
+      {/* Message list */}
       <FlatList
         data={messages}
-        renderItem={renderItem}
+        renderItem={renderMessage}
         keyExtractor={(_, index) => index.toString()}
         style={styles.messageList}
         contentContainerStyle={styles.messageListContent}
       />
       
+      {/* Loading indicator */}
       {isLoading && (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="small" color="#007AFF" />
+          <ActivityIndicator size="large" color="#4a6fff" />
         </View>
       )}
       
+      {/* Selected image preview */}
       {selectedImage && (
-        <View style={styles.selectedImageContainer}>
-          <Image source={{ uri: selectedImage }} style={styles.selectedImagePreview} />
-          <TouchableOpacity style={styles.clearImageButton} onPress={clearImage}>
-            <FontAwesome name="times-circle" size={20} color="#FF3B30" />
+        <View style={styles.imagePreviewContainer}>
+          <Image source={{ uri: selectedImage }} style={styles.imagePreview} />
+          <TouchableOpacity 
+            style={styles.removeImageButton}
+            onPress={() => setSelectedImage(null)}
+          >
+            <FontAwesome name="times-circle" size={24} color="#fff" />
           </TouchableOpacity>
         </View>
       )}
       
+      {/* Input area */}
       <View style={styles.inputContainer}>
-        <View style={styles.mediaButtons}>
-          <TouchableOpacity onPress={pickImage} style={styles.mediaButton}>
-            <FontAwesome name="photo" size={20} color="#007AFF" />
-          </TouchableOpacity>
-          
-          <TouchableOpacity onPress={takePhoto} style={styles.mediaButton}>
-            <FontAwesome name="camera" size={20} color="#007AFF" />
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-  onPress={isRecording ? stopRecording : startRecording}
-  style={[styles.mediaButton, isRecording && styles.recordingButton]}
->
-  <FontAwesome name="microphone" size={20} color={isRecording ? "#FF3B30" : "#007AFF"} />
-</TouchableOpacity>
-        </View>
+        <TouchableOpacity style={styles.mediaButton} onPress={pickImage}>
+          <FontAwesome name="image" size={20} color="#4a6fff" />
+        </TouchableOpacity>
+        
+        <TouchableOpacity style={styles.mediaButton} onPress={takePhoto}>
+          <FontAwesome name="camera" size={20} color="#4a6fff" />
+        </TouchableOpacity>
+        
+        <TouchableOpacity 
+          style={styles.mediaButton}
+          onPressIn={startRecording}
+          onPressOut={stopRecording}
+        >
+          <FontAwesome 
+            name="microphone" 
+            size={20} 
+            color={isRecording ? "#ff4a4a" : "#4a6fff"} 
+          />
+        </TouchableOpacity>
         
         <TextInput
           style={styles.input}
           value={inputText}
           onChangeText={setInputText}
-          placeholder="Type an event to add to calendar..."
-          placeholderTextColor="#999"
-          returnKeyType="send"
-          onSubmitEditing={handleSend}
-          editable={!isLoading}
+          placeholder="Type a message..."
+          placeholderTextColor="#888"
+          multiline
         />
         
-        <Button title="Send" onPress={handleSend} disabled={isLoading} />
+        <TouchableOpacity 
+          style={[styles.sendButton, (!inputText.trim() && !selectedImage && !audioData) ? styles.disabledButton : null]}
+          onPress={sendMessage}
+          disabled={!inputText.trim() && !selectedImage && !audioData}
+        >
+          <FontAwesome name="send" size={20} color="#fff" />
+        </TouchableOpacity>
       </View>
     </ThemedView>
   );
@@ -291,77 +320,45 @@ const styles = StyleSheet.create({
     padding: 10,
   },
   header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 15,
     paddingTop: 50,
     paddingBottom: 15,
-    paddingHorizontal: 15,
-    alignItems: 'center',
-    borderBottomWidth: 1,
-    borderBottomColor: '#ccc',
   },
-  headerText: {
-    fontSize: 16,
-    fontWeight: '500',
+  headerTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+  },
+  logoutButton: {
+    padding: 8,
   },
   messageList: {
     flex: 1,
   },
   messageListContent: {
-    paddingVertical: 15,
-  },
-  loadingContainer: {
-    padding: 10,
-    alignItems: 'center',
-  },
-  inputContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#ccc',
-  },
-  input: {
-    flex: 1,
-    borderColor: '#ccc',
-    borderWidth: 1,
-    borderRadius: 20,
-    padding: 10,
-    marginRight: 10,
+    paddingTop: 10,
+    paddingBottom: 10,
   },
   messageBubble: {
-    padding: 10,
-    borderRadius: 20,
+    maxWidth: '80%',
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    borderRadius: 18,
     marginVertical: 5,
     marginHorizontal: 10,
-    maxWidth: '80%',
   },
-  userBubble: {
-    backgroundColor: '#007AFF',
+  userMessage: {
     alignSelf: 'flex-end',
+    backgroundColor: '#4a6fff',
   },
-  aiBubble: {
-    backgroundColor: '#E5E5EA',
+  aiMessage: {
     alignSelf: 'flex-start',
+    backgroundColor: '#303030',
   },
   messageText: {
     fontSize: 16,
-  },
-  userText: {
-    color: '#fff',
-  },
-  aiText: {
-    color: '#000',
-  },
-  mediaButtons: {
-    flexDirection: 'row',
-    marginRight: 10,
-  },
-  mediaButton: {
-    padding: 8,
-    marginRight: 5,
-  },
-  recordingButton: {
-    backgroundColor: '#FFEBE9',
-    borderRadius: 20,
   },
   messageImage: {
     width: '100%',
@@ -369,22 +366,57 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 8,
   },
-  selectedImageContainer: {
-    marginHorizontal: 10,
-    marginBottom: 10,
+  loadingContainer: {
+    padding: 15,
+    alignItems: 'center',
+  },
+  imagePreviewContainer: {
+    margin: 10,
     position: 'relative',
+    alignSelf: 'flex-start',
   },
-  selectedImagePreview: {
-    width: '100%',
+  imagePreview: {
+    width: 150,
     height: 150,
-    borderRadius: 12,
+    borderRadius: 10,
   },
-  clearImageButton: {
+  removeImageButton: {
     position: 'absolute',
-    top: 5,
-    right: 5,
-    backgroundColor: 'rgba(255,255,255,0.8)',
-    borderRadius: 12,
-    padding: 4,
+    top: -10,
+    right: -10,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    borderRadius: 15,
+  },
+  inputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 20,
+  },
+  mediaButton: {
+    padding: 10,
+  },
+  input: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#444',
+    borderRadius: 20,
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    marginHorizontal: 5,
+    maxHeight: 100,
+    color: '#fff',
+  },
+  sendButton: {
+    backgroundColor: '#4a6fff',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  disabledButton: {
+    backgroundColor: '#666',
   },
 });
