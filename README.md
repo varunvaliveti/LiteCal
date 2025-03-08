@@ -1,50 +1,114 @@
-# Welcome to your Expo app 👋
+# LiteCal - AI Calendar Assistant
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+LiteCal is a React Native mobile app that helps users manage calendar events using natural language. The app uses AI to interpret user requests and create calendar events automatically.
 
-## Get started
+## Project Structure
 
-1. Install dependencies
+- **Frontend**: React Native with Expo
+- **Backend**: Python server for AI processing
 
+## Prerequisites
+
+- [Node.js](https://nodejs.org/) (v18 or newer)
+- [npm](https://www.npmjs.com/) or [yarn](https://yarnpkg.com/)
+- [Expo CLI](https://docs.expo.dev/workflow/expo-cli/)
+- [Python](https://www.python.org/) 3.8+ (for backend)
+
+## Setup Instructions
+
+### Frontend Setup
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/your-username/LiteCal.git
+   cd LiteCal
+   ```
+
+2. Install dependencies:
    ```bash
    npm install
    ```
+   
+   This will install all the dependencies listed in package.json, including:
+   - Expo and React Native
+   - Firebase authentication
+   - Calendar and file system utilities
+   - UI components and navigation
 
-2. Start the app
-
-   ```bash
-    npx expo start
+3. Setup environment variables:
+   Create a `.env` file in the main project folder with your API key and configurations:
+   ```
+   GEMINI_API_KEY==[THE KEY DON'T INCLUDE THE BRACKETS]
    ```
 
-In the output, you'll find options to open the app in a
+4. Start the app:
+   ```bash
+   npx expo start
+   ```
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+### Backend Setup
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+1. Navigate to the backend directory:
+   ```bash
+   cd backend
+   ```
 
-## Get a fresh project
+2. Create and activate a virtual environment (CRUCIAL MAKE THE VIRTUAL ENVIRONMENT):
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  #windows: venv\Scripts\activate
+   ```
 
-When you're ready, run:
+3. Install backend dependencies (usually pip but sometimes do pip3):
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. Start the backend server (if python doesn't work python3 app.py):
+   ```bash
+   python app.py
+   ```
+
+## Features
+
+- Natural language calendar event creation
+- Event preview with date and time display
+- Export calendar events as ICS files
+- Add events directly to device calendar
+- Voice input for event creation
+- Image upload capability
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Module not found errors**: Make sure you've installed all dependencies with `npm install`.
+
+2. **API Connection Issues**: Verify the backend server is running and the API_URL in the `.env` file is correct.
+
+3. **Firebase Configuration**: Ensure you have the proper Firebase configuration in your constants folder.
+
+## Development
+
+To run the development server with hot reload:
 
 ```bash
-npm run reset-project
+npm start
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+For iOS:
+```bash
+npm run ios
+```
 
-## Learn more
+For Android:
+```bash
+npm run android
+```
 
-To learn more about developing your project with Expo, look at the following resources:
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
 
-## Join the community
 
-Join our community of developers creating universal apps.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+
+

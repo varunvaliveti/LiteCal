@@ -132,25 +132,64 @@ export const useChat = (): UseChatReturn => {
     if (!user) return "";
     
     try {
+      // Get more messages for better context (increased from 10 to 20)
       const q = query(
         messagesRef,
         where("userId", "==", user.uid),
         orderBy("timestamp", "desc"),
-        limit(10)
+        limit(20)
       );
       
       const querySnapshot = await getDocs(q);
-      
-      // Format context string - most recent messages first
-      let contextString = "--- Previous conversation history ---\n";
+      const messages: ChatMessage[] = [];
       
       querySnapshot.forEach((doc) => {
-        const message = doc.data() as ChatMessage;
-        const role = message.isUser ? "User" : "Assistant";
-        contextString += `${role}: ${message.text}\n`;
+        messages.push({
+          id: doc.id,
+          ...doc.data() as Omit<ChatMessage, 'id'>
+        });
       });
       
-      contextString += "--- End of previous conversations ---\n";
+      // Sort by timestamp (oldest first for proper conversation flow)
+      messages.sort((a, b) => {
+        if (!a.timestamp || !b.timestamp) return 0;
+        return a.timestamp.seconds - b.timestamp.seconds;
+      });
+      
+      // Format context string with better structure and conversation delineation
+      let contextString = "### Previous Conversation History ###\n\n";
+      
+      // Group messages by conversation based on timestamp proximity
+      let currentConversation: ChatMessage[] = [];
+      let conversationIndex = 1;
+      
+      for (let i = 0; i < messages.length; i++) {
+        const message = messages[i];
+        const nextMessage = messages[i + 1];
+        
+        currentConversation.push(message);
+        
+        // Check if this is the end of a conversation (large time gap or last message)
+        const isEndOfConversation = 
+          !nextMessage || 
+          (nextMessage.timestamp && message.timestamp && 
+           nextMessage.timestamp.seconds - message.timestamp.seconds > 300); // 5 minute gap
+        
+        if (isEndOfConversation && currentConversation.length > 0) {
+          contextString += `Conversation ${conversationIndex}:\n`;
+          
+          currentConversation.forEach(msg => {
+            const role = msg.isUser ? "User" : "Assistant";
+            contextString += `${role}: ${msg.text}\n`;
+          });
+          
+          contextString += "\n---\n\n";
+          currentConversation = [];
+          conversationIndex++;
+        }
+      }
+      
+      contextString += "### End of Previous Conversations ###\n";
       return contextString;
     } catch (err) {
       console.error("Error getting chat context: ", err);

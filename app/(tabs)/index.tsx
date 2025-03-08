@@ -51,6 +51,8 @@ export default function HomeScreen() {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [audioData, setAudioData] = useState<string | null>(null);
   const [currentEvent, setCurrentEvent] = useState<{ data: EventData; ics: string } | null>(null);
+  const flatListRef = React.useRef<FlatList>(null);
+  const [currentDate, setCurrentDate] = useState(new Date());
 
   const { user, logout, isLoading: authLoading } = useAuth();
   const { messages, sendMessage, loading: chatLoading, error, getContextForRAG } = useChat();
@@ -58,6 +60,19 @@ export default function HomeScreen() {
 
   // Update with your server's address
   const API_URL = 'http://127.0.0.1:5001/chat';
+
+  // Update current date every minute
+  useEffect(() => {
+    // Initialize current date
+    setCurrentDate(new Date());
+    
+    // Update current date every minute to ensure it's accurate
+    const intervalId = setInterval(() => {
+      setCurrentDate(new Date());
+    }, 60000);
+    
+    return () => clearInterval(intervalId);
+  }, []);
 
   // Check if user is authenticated
   useEffect(() => {
@@ -84,6 +99,15 @@ export default function HomeScreen() {
       await ImagePicker.requestMediaLibraryPermissionsAsync();
     })();
   }, []);
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    if (messages.length > 0 && flatListRef.current) {
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: true });
+      }, 100); // Small delay to ensure the UI has updated
+    }
+  }, [messages]);
 
   const handleLogout = async () => {
     try {
@@ -215,12 +239,28 @@ export default function HomeScreen() {
       // Get conversation history for RAG
       const chatHistory = await getContextForRAG();
       
+      // Format current date in multiple formats for the LLM to understand context
+      const today = currentDate;
+      const formattedDate = today.toISOString().split('T')[0]; // YYYY-MM-DD
+      const readableDate = today.toLocaleDateString('en-US', { 
+        weekday: 'long', 
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+      
       // Prepare data to send to the API
       const data = {
         message: messageText,
         image: selectedImage,
         audio: audioData,
-        history: chatHistory // Include RAG context
+        history: chatHistory, // Include RAG context
+        user_id: user.uid, // Add user ID for better personalization
+        timestamp: new Date().toISOString(), // Add timestamp for better context
+        current_date: formattedDate, // Send current date for calendar events
+        current_date_readable: readableDate, // Send readable current date
+        current_day_of_week: today.toLocaleDateString('en-US', { weekday: 'long' }), // Current day name
+        use_12h_format: true // Explicitly request 12-hour time format
       };
       
       // Clear the image and audio after sending
@@ -248,6 +288,64 @@ export default function HomeScreen() {
         const eventData = result.event_data;
         const icsFile = result.ics_file;
         
+        // Validate and format event data
+        if (eventData) {
+          // Log for debugging purposes
+          console.log("Original event data from API:", JSON.stringify(eventData));
+          
+          // Ensure proper capitalization in title and location
+          eventData.event_title = capitalizeWords(eventData.event_title);
+          if (eventData.location) {
+            eventData.location = capitalizeWords(eventData.location);
+          }
+          
+          // Make sure we're using today's date if no specific date was requested
+          if (!eventData.specified_date) {
+            const today = new Date();
+            eventData.start_date = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+            if (eventData.end_date) {
+              eventData.end_date = eventData.start_date;
+            }
+          }
+          
+          // Ensure date strings are in YYYY-MM-DD format without any timezone conversion
+          // This preserves the exact date as determined by the backend
+          const ensureValidDateFormat = (dateStr: string): string => {
+            // Check if the string is already in YYYY-MM-DD format
+            const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+            if (dateRegex.test(dateStr)) {
+              return dateStr;
+            }
+            
+            try {
+              // If not in correct format, try to parse and reformat
+              const date = new Date(dateStr);
+              if (!isNaN(date.getTime())) {
+                return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+              }
+            } catch (e) {
+              console.error("Error formatting date:", e);
+            }
+            
+            // Return original if parsing fails
+            return dateStr;
+          };
+          
+          // Apply date formatting directly without timezone conversions
+          if (eventData.start_date) {
+            eventData.start_date = ensureValidDateFormat(eventData.start_date);
+            console.log("Formatted start date:", eventData.start_date);
+          }
+          
+          if (eventData.end_date) {
+            eventData.end_date = ensureValidDateFormat(eventData.end_date);
+            console.log("Formatted end date:", eventData.end_date);
+          }
+          
+          // Log the final event data for debugging
+          console.log("Final event data to display:", JSON.stringify(eventData));
+        }
+        
         // Save the event response to Firebase
         await saveAIResponse(result.message, true);
         
@@ -263,13 +361,34 @@ export default function HomeScreen() {
     } catch (error) {
       console.error('Error sending message:', error);
       
-      // Don't add error message to Firebase, just show temporarily
-      setTimeout(() => {
-        setIsLoading(false);
-      }, 1000);
+      // Save a friendly error message to chat
+      await saveAIResponse("I'm sorry, I'm having trouble processing your request right now. Please try again.");
     } finally {
       setIsLoading(false);
     }
+  };
+  
+  // Helper function to capitalize words properly
+  const capitalizeWords = (text: string): string => {
+    if (!text) return '';
+    
+    // Words that should not be capitalized unless they are the first or last word
+    const minorWords = ['a', 'an', 'the', 'and', 'but', 'or', 'for', 'nor', 'on', 'at', 'to', 'from', 'by', 'in', 'of'];
+    
+    return text.split(' ').map((word, index, array) => {
+      // Always capitalize first and last words
+      if (index === 0 || index === array.length - 1) {
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      }
+      
+      // Check for minor words
+      if (minorWords.includes(word.toLowerCase())) {
+        return word.toLowerCase();
+      }
+      
+      // Capitalize other words
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    }).join(' ');
   };
 
   // Render each message in the chat
@@ -299,7 +418,7 @@ export default function HomeScreen() {
       <KeyboardAvoidingView 
         style={styles.chatContainer}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={100}
+        keyboardVerticalOffset={10}
       >
         {/* Message list */}
         {chatLoading && messages.length === 0 ? (
@@ -314,6 +433,7 @@ export default function HomeScreen() {
             keyExtractor={(item) => item.id || Math.random().toString()}
             style={styles.messageList}
             contentContainerStyle={styles.messageListContent}
+            ref={flatListRef}
           />
         )}
         
@@ -496,7 +616,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     marginHorizontal: 5,
     maxHeight: 100,
-    color: '#fff',
+    color: '#000',
   },
   sendButton: {
     backgroundColor: '#4a6fff',

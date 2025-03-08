@@ -137,21 +137,35 @@ class FlareNetworkService {
     title: string,
     startTime: Date,
     endTime: Date,
-    description: string
+    description: string,
+    location?: string
   ): Promise<string> {
     if (!this.eventContract || !this.wallet) {
       throw new Error('Contract or wallet not initialized');
     }
 
     try {
+      // Ensure proper capitalization for title
+      const formattedTitle = this.capitalizeTitle(title);
+      
+      // Format location if provided
+      const formattedLocation = location ? this.capitalizeLocation(location) : '';
+      
+      // Format description with proper grammar and capitalization
+      const formattedDescription = this.formatDescription(description);
+      
       const startTimeUnix = Math.floor(startTime.getTime() / 1000);
       const endTimeUnix = Math.floor(endTime.getTime() / 1000);
 
+      // Add formatted location to blockchain data if available
+      const locationData = formattedLocation ? { location: formattedLocation } : {};
+      
       const tx = await this.eventContract.createEvent(
-        title,
+        formattedTitle,
         startTimeUnix,
         endTimeUnix,
-        description
+        formattedDescription,
+        locationData
       );
 
       // Wait for transaction to be mined
@@ -167,6 +181,71 @@ class FlareNetworkService {
       console.error('Error creating calendar event on Flare Network:', error);
       throw error;
     }
+  }
+  
+  // Helper function to capitalize event title properly
+  private capitalizeTitle(title: string): string {
+    if (!title) return 'New Event';
+    
+    // Words that should not be capitalized unless they are the first or last word
+    const minorWords = ['a', 'an', 'the', 'and', 'but', 'or', 'for', 'nor', 'on', 'at', 'to', 'from', 'by', 'in', 'of'];
+    
+    return title.split(' ').map((word, index, array) => {
+      // Always capitalize first and last words
+      if (index === 0 || index === array.length - 1) {
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      }
+      
+      // Check for minor words
+      if (minorWords.includes(word.toLowerCase())) {
+        return word.toLowerCase();
+      }
+      
+      // Capitalize other words
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    }).join(' ');
+  }
+  
+  // Helper function to capitalize location properly
+  private capitalizeLocation(location: string): string {
+    if (!location) return '';
+    
+    // Split by commas for address components
+    return location.split(',').map(part => {
+      return part.trim().split(' ').map((word, index) => {
+        // Always capitalize first word in address component
+        if (index === 0) {
+          return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+        }
+        
+        // Don't capitalize certain words in addresses
+        const lowercaseWords = ['and', 'or', 'the', 'a', 'an', 'of', 'to', 'in', 'for', 'on', 'by', 'at'];
+        if (lowercaseWords.includes(word.toLowerCase())) {
+          return word.toLowerCase();
+        }
+        
+        // Keep abbreviations uppercase
+        if (word.toUpperCase() === word && word.length <= 3) {
+          return word.toUpperCase();
+        }
+        
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      }).join(' ');
+    }).join(', ');
+  }
+  
+  // Helper function to format description with proper grammar
+  private formatDescription(description: string): string {
+    if (!description) return '';
+    
+    // Split into sentences
+    const sentences = description.split(/(?<=[.!?])\s+/);
+    
+    return sentences.map(sentence => {
+      if (!sentence) return '';
+      // Capitalize first letter of each sentence
+      return sentence.charAt(0).toUpperCase() + sentence.slice(1);
+    }).join(' ');
   }
 
   public async getCalendarEvent(eventId: string): Promise<any> {

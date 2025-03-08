@@ -38,22 +38,26 @@ export default function FlareEventsScreen() {
       const address = await FlareNetworkService.getWalletAddress();
       setWalletAddress(address);
       
-      // Mock data for demonstration purposes
+      // Create example events using current date
       if (address) {
+        const today = new Date();
+        const tomorrow = new Date(today);
+        tomorrow.setDate(today.getDate() + 1);
+        
         setEvents([
           {
             id: '1',
             title: 'Team Meeting',
-            startTime: new Date(Date.now() + 86400000), // tomorrow
-            endTime: new Date(Date.now() + 90000000),
+            startTime: new Date(today.setHours(10, 0, 0, 0)), // 10:00 AM today
+            endTime: new Date(today.setHours(11, 0, 0, 0)),  // 11:00 AM today
             description: 'Weekly team sync',
             creator: address
           },
           {
             id: '2',
             title: 'Blockchain Conference',
-            startTime: new Date(Date.now() + 172800000), // day after tomorrow
-            endTime: new Date(Date.now() + 180000000),
+            startTime: new Date(tomorrow.setHours(13, 30, 0, 0)), // 1:30 PM tomorrow
+            endTime: new Date(tomorrow.setHours(15, 0, 0, 0)),   // 3:00 PM tomorrow
             description: 'Annual blockchain technology conference',
             creator: address
           }
@@ -65,6 +69,52 @@ export default function FlareEventsScreen() {
     } finally {
       setIsLoading(false);
     }
+  };
+  
+  const resetForm = () => {
+    setTitle('');
+    setDescription('');
+    
+    // Set to current date with times 
+    const now = new Date();
+    const anHourLater = new Date(now);
+    anHourLater.setHours(now.getHours() + 1);
+    
+    setStartDate(now);
+    setEndDate(anHourLater);
+  };
+  
+  const formatDate = (date: Date) => {
+    return date.toLocaleString('en-US', {
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true // Explicitly use 12-hour format
+    });
+  };
+  
+  const capitalizeTitle = (title: string): string => {
+    if (!title) return '';
+    
+    // Words that should not be capitalized unless they are the first or last word
+    const minorWords = ['a', 'an', 'the', 'and', 'but', 'or', 'for', 'nor', 'on', 'at', 'to', 'from', 'by', 'in', 'of'];
+    
+    return title.split(' ').map((word, index, array) => {
+      // Always capitalize first and last words
+      if (index === 0 || index === array.length - 1) {
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      }
+      
+      // Check for minor words
+      if (minorWords.includes(word.toLowerCase())) {
+        return word.toLowerCase();
+      }
+      
+      // Capitalize other words
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    }).join(' ');
   };
   
   const createEvent = async () => {
@@ -82,12 +132,15 @@ export default function FlareEventsScreen() {
       setIsLoading(true);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       
+      // Create a properly formatted title
+      const formattedTitle = capitalizeTitle(title);
+      
       // In a real implementation, this would call FlareNetworkService.createCalendarEvent
       // For demo purposes, we're just simulating the creation
       setTimeout(() => {
         const newEvent: BlockchainEvent = {
           id: Math.random().toString(36).substring(2, 9),
-          title,
+          title: formattedTitle,
           startTime: startDate,
           endTime: endDate,
           description,
@@ -110,23 +163,6 @@ export default function FlareEventsScreen() {
       Alert.alert('Error', 'Failed to create event on the blockchain');
       setIsLoading(false);
     }
-  };
-  
-  const resetForm = () => {
-    setTitle('');
-    setDescription('');
-    setStartDate(new Date());
-    setEndDate(new Date(Date.now() + 3600000));
-  };
-  
-  const formatDate = (date: Date) => {
-    return date.toLocaleString('en-US', {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
   };
   
   const handleStartDateChange = (event: any, selectedDate?: Date) => {

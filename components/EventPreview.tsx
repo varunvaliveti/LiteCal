@@ -72,18 +72,40 @@ const EventPreview = ({ eventData, icsFile }: EventPreviewProps) => {
         return;
       }
       
-      // Format dates
-      const startDate = new Date(`${eventData.start_date}T${eventData.start_time}`);
+      // Parse date parts
+      const [startYear, startMonth, startDay] = eventData.start_date.split('-').map(num => parseInt(num, 10));
+      
+      // Format dates - using explicit date construction to avoid timezone issues
+      // Set hours, minutes, seconds explicitly from the time string
+      const [startHours, startMinutes] = eventData.start_time.split(':').map(num => parseInt(num, 10));
+      
+      // Create date with explicit parts to avoid timezone issues
+      const startDate = new Date();
+      startDate.setFullYear(startYear, startMonth - 1, startDay);
+      startDate.setHours(startHours, startMinutes, 0, 0);
+      
+      console.log("Calendar event start date:", startDate.toString());
       
       let endDate;
       if (eventData.end_date && eventData.end_time) {
-        endDate = new Date(`${eventData.end_date}T${eventData.end_time}`);
+        const [endYear, endMonth, endDay] = eventData.end_date.split('-').map(num => parseInt(num, 10));
+        const [endHours, endMinutes] = eventData.end_time.split(':').map(num => parseInt(num, 10));
+        
+        endDate = new Date();
+        endDate.setFullYear(endYear, endMonth - 1, endDay);
+        endDate.setHours(endHours, endMinutes, 0, 0);
       } else if (eventData.end_time) {
-        endDate = new Date(`${eventData.start_date}T${eventData.end_time}`);
+        const [endHours, endMinutes] = eventData.end_time.split(':').map(num => parseInt(num, 10));
+        
+        endDate = new Date();
+        endDate.setFullYear(startYear, startMonth - 1, startDay);
+        endDate.setHours(endHours, endMinutes, 0, 0);
       } else {
         // Default to 1 hour after start time
         endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
       }
+      
+      console.log("Calendar event end date:", endDate.toString());
       
       // Create event
       const eventId = await Calendar.createEventAsync(defaultCalendar.id, {
@@ -106,16 +128,48 @@ const EventPreview = ({ eventData, icsFile }: EventPreviewProps) => {
 
   // Format the date for display
   const formatDate = (dateStr: string) => {
-    const date = new Date(dateStr);
-    return date.toLocaleDateString(undefined, { 
-      weekday: 'short', 
-      year: 'numeric', 
-      month: 'short', 
-      day: 'numeric' 
-    });
+    try {
+      console.log("Formatting date:", dateStr);
+      
+      // Parse the date string manually
+      const [year, month, day] = dateStr.split('-').map(num => parseInt(num, 10));
+      
+      // Direct mapping for month names
+      const monthNames = [
+        'January', 'February', 'March', 'April', 'May', 'June', 
+        'July', 'August', 'September', 'October', 'November', 'December'
+      ];
+      
+      // Direct mapping for day of week calculation
+      // This is a precise implementation of Zeller's Congruence algorithm
+      const getWeekdayName = (year: number, month: number, day: number): string => {
+        // Adjust month and year for Zeller's Congruence (Jan & Feb are considered month 13 & 14 of previous year)
+        if (month < 3) {
+          month += 12;
+          year -= 1;
+        }
+        
+        // Calculate day of week using Zeller's Congruence
+        const h = (day + Math.floor((13 * (month + 1)) / 5) + year + Math.floor(year / 4) - 
+                  Math.floor(year / 100) + Math.floor(year / 400)) % 7;
+        
+        // Convert h to standard day of week (0 = Sunday, 6 = Saturday)
+        const dayNames = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+        return dayNames[h];
+      };
+      
+      const weekday = getWeekdayName(year, month, day);
+      const monthName = monthNames[month - 1]; // Adjust for 0-indexed array
+      
+      // Format the date string manually
+      return `${weekday}, ${monthName} ${day}, ${year}`;
+    } catch (error) {
+      console.error("Error formatting date:", error, dateStr);
+      return dateStr; // Fallback to the original string
+    }
   };
   
-  // Format the time for display
+  // Format the time for display in 12-hour format
   const formatTime = (timeStr: string) => {
     const [hours, minutes] = timeStr.split(':');
     const time = new Date();
@@ -123,9 +177,27 @@ const EventPreview = ({ eventData, icsFile }: EventPreviewProps) => {
     time.setMinutes(parseInt(minutes, 10));
     
     return time.toLocaleTimeString(undefined, { 
-      hour: '2-digit', 
-      minute: '2-digit'
+      hour: 'numeric', 
+      minute: '2-digit',
+      hour12: true // Explicitly use 12-hour format
     });
+  };
+
+  // Function to format the event location with proper capitalization
+  const formatLocation = (location: string | undefined) => {
+    if (!location) return '';
+    
+    // Split by commas for address components
+    return location.split(',').map(part => {
+      return part.trim().split(' ').map(word => {
+        // Don't capitalize certain words in addresses
+        const lowercaseWords = ['and', 'or', 'the', 'a', 'an', 'of', 'to', 'in', 'for', 'on', 'by', 'at'];
+        if (lowercaseWords.includes(word.toLowerCase()) && word !== part.trim().split(' ')[0]) {
+          return word.toLowerCase();
+        }
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      }).join(' ');
+    }).join(', ');
   };
 
   return (
@@ -154,7 +226,7 @@ const EventPreview = ({ eventData, icsFile }: EventPreviewProps) => {
         {eventData.location && (
           <View style={styles.detailRow}>
             <FontAwesome name="map-marker" size={16} color="#888" style={styles.icon} />
-            <Text style={styles.detailText}>{eventData.location}</Text>
+            <Text style={styles.detailText}>{formatLocation(eventData.location)}</Text>
           </View>
         )}
         
