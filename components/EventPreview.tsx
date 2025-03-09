@@ -28,11 +28,36 @@ const EventPreview = ({ eventData, icsFile }: EventPreviewProps) => {
       const fileName = `${eventData.event_title.replace(/[^a-zA-Z0-9]/g, '_')}.ics`;
       const fileUri = FileSystem.documentDirectory + fileName;
       
-      // Decode base64 ICS file
-      const icsContent = atob(icsFile);
+      // Log ICS file info for debugging
+      console.log("Processing ICS file export with data:", JSON.stringify({
+        event_title: eventData.event_title,
+        start_date: eventData.start_date,
+        start_time: eventData.start_time,
+        end_date: eventData.end_date,
+        end_time: eventData.end_time
+      }));
+      console.log("ICS file length:", icsFile ? icsFile.length : 0);
+      
+      // Safely decode base64 ICS file
+      let icsContent;
+      try {
+        icsContent = atob(icsFile);
+        console.log("Successfully decoded ICS content, length:", icsContent.length);
+      } catch (e) {
+        console.error("Error decoding ICS file:", e);
+        // Try to fix common encoding issues or use a fallback
+        icsContent = generateFallbackICSContent(eventData);
+      }
+      
+      // Verify ICS content has required elements
+      if (!icsContent.includes('BEGIN:VCALENDAR') || !icsContent.includes('END:VCALENDAR')) {
+        console.warn("ICS content is missing required elements, using fallback");
+        icsContent = generateFallbackICSContent(eventData);
+      }
       
       // Write the file
       await FileSystem.writeAsStringAsync(fileUri, icsContent);
+      console.log("ICS file written to:", fileUri);
       
       // Share the file
       if (await Sharing.isAvailableAsync()) {
@@ -48,6 +73,53 @@ const EventPreview = ({ eventData, icsFile }: EventPreviewProps) => {
       console.error('Error exporting ICS file:', error);
       alert('Failed to export calendar event');
     }
+  };
+  
+  // Generate a fallback ICS content if there are issues with the provided one
+  const generateFallbackICSContent = (eventData: EventData): string => {
+    // Get current timestamp for UID
+    const timestamp = new Date().getTime();
+    const uid = `event-${timestamp}@litecal.app`;
+    
+    // Parse dates and times
+    const [year, month, day] = eventData.start_date.split('-').map(num => parseInt(num, 10));
+    const [startHour, startMinute] = eventData.start_time.split(':').map(num => parseInt(num, 10));
+    
+    // Create formatted date strings for ICS
+    const formatDateForICS = (year: number, month: number, day: number, hour: number, minute: number) => {
+      return `${year}${String(month).padStart(2, '0')}${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}${String(minute).padStart(2, '0')}00Z`;
+    };
+    
+    const startDateFormatted = formatDateForICS(year, month, day, startHour, startMinute);
+    
+    // For end time, use end_time if provided, otherwise default to 1 hour later
+    let endDateFormatted;
+    if (eventData.end_time) {
+      const [endHour, endMinute] = eventData.end_time.split(':').map(num => parseInt(num, 10));
+      endDateFormatted = formatDateForICS(year, month, day, endHour, endMinute);
+    } else {
+      // Default to 1 hour event
+      endDateFormatted = formatDateForICS(year, month, day, startHour + 1, startMinute);
+    }
+    
+    // Build basic ICS content
+    return [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//LiteCal//EN',
+      'CALSCALE:GREGORIAN',
+      'METHOD:PUBLISH',
+      'BEGIN:VEVENT',
+      `UID:${uid}`,
+      `DTSTAMP:${startDateFormatted}`,
+      `DTSTART:${startDateFormatted}`,
+      `DTEND:${endDateFormatted}`,
+      `SUMMARY:${eventData.event_title || 'Calendar Event'}`,
+      eventData.location ? `LOCATION:${eventData.location}` : '',
+      eventData.description ? `DESCRIPTION:${eventData.description}` : '',
+      'END:VEVENT',
+      'END:VCALENDAR'
+    ].filter(Boolean).join('\r\n');
   };
 
   // Function to add event to device calendar
@@ -149,7 +221,7 @@ const EventPreview = ({ eventData, icsFile }: EventPreviewProps) => {
           year -= 1;
         }
         
-        // Calculate day of week using Zeller's Congruence
+        //shoutout Zeller's Congruence
         const h = (day + Math.floor((13 * (month + 1)) / 5) + year + Math.floor(year / 4) - 
                   Math.floor(year / 100) + Math.floor(year / 400)) % 7;
         

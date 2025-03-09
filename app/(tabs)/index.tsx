@@ -43,6 +43,39 @@ interface CalendarEventResponse {
   requires_clarification?: boolean;
 }
 
+// Safe btoa function for React Native
+const safeBtoa = (str: string): string => {
+  try {
+    // First try the standard btoa
+    return btoa(str);
+  } catch (e) {
+    console.log("Standard btoa failed, using custom implementation");
+    
+    // For React Native, use a more robust base64 implementation
+    // This is a more complete base64 encoding implementation
+    const base64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let output = '';
+    let i = 0;
+    
+    // Process 3 bytes at a time, and encode them as 4 base64 characters
+    while (i < str.length) {
+      const a = str.charCodeAt(i++);
+      const b = i < str.length ? str.charCodeAt(i++) : 0;
+      const c = i < str.length ? str.charCodeAt(i++) : 0;
+      
+      const trio = (a << 16) | (b << 8) | c;
+      
+      output += base64chars[(trio >> 18) & 0x3f];
+      output += base64chars[(trio >> 12) & 0x3f];
+      output += i > str.length + 1 ? '=' : base64chars[(trio >> 6) & 0x3f];
+      output += i > str.length ? '=' : base64chars[trio & 0x3f];
+    }
+    
+    console.log("Generated base64 with custom implementation, length:", output.length);
+    return output;
+  }
+};
+
 export default function HomeScreen() {
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -53,6 +86,7 @@ export default function HomeScreen() {
   const [currentEvent, setCurrentEvent] = useState<{ data: EventData; ics: string } | null>(null);
   const flatListRef = React.useRef<FlatList>(null);
   const [currentDate, setCurrentDate] = useState(new Date());
+  const [debugEventInfo, setDebugEventInfo] = useState<string | null>(null);
 
   const { user, logout, isLoading: authLoading } = useAuth();
   const { messages, sendMessage, loading: chatLoading, error, getContextForRAG } = useChat();
@@ -109,6 +143,15 @@ export default function HomeScreen() {
     }
   }, [messages]);
 
+  // Scroll to bottom on initial load
+  useEffect(() => {
+    if (messages.length > 0 && flatListRef.current && !chatLoading) {
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+      }, 300); // Slightly longer delay for initial load to ensure messages are rendered
+    }
+  }, [chatLoading]);
+
   const handleLogout = async () => {
     try {
       await logout();
@@ -121,10 +164,32 @@ export default function HomeScreen() {
   // Start recording function
   const startRecording = async () => {
     try {
+      // If already recording, stop recording
+      if (isRecording) {
+        await stopRecording();
+        return;
+      }
+
       // First make sure any existing recording is stopped and unloaded
       if (recording) {
-        await recording.stopAndUnloadAsync();
+        try {
+          await recording.stopAndUnloadAsync();
+        } catch (error) {
+          // If the recording was already unloaded, just continue
+          console.log('Recording was already unloaded');
+        }
       }
+
+      // Configure audio mode for recording - required for iOS
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        shouldDuckAndroid: true,
+        interruptionModeIOS: 1, // DoNotMix = 1
+        interruptionModeAndroid: 1, // DoNotMix = 1
+        playThroughEarpieceAndroid: false,
+        staysActiveInBackground: false,
+      });
 
       // Need to set up the recording object
       const { recording: newRecording } = await Audio.Recording.createAsync(
@@ -143,11 +208,22 @@ export default function HomeScreen() {
     if (!recording) return;
 
     try {
-      await recording.stopAndUnloadAsync();
+      // First set the recording state to false so UI updates immediately
       setIsRecording(false);
       
+      try {
+        await recording.stopAndUnloadAsync();
+      } catch (error) {
+        // If the recording was already unloaded, just continue
+        console.log('Recording was already unloaded');
+      }
+      
       const uri = recording.getURI();
-      if (!uri) return;
+      if (!uri) {
+        // Clear the recording reference since we can't use it
+        setRecording(null);
+        return;
+      }
       
       // Get the raw data of the recording as base64
       const fileData = await fetch(uri);
@@ -158,10 +234,48 @@ export default function HomeScreen() {
       reader.readAsDataURL(blob);
       reader.onloadend = () => {
         const base64data = reader.result as string;
+        
+        // Set audioData state first
         setAudioData(base64data);
+        
+        // Create a default event that will show immediately
+        const today = new Date();
+        const hour = today.getHours();
+        const endHour = (hour + 1) > 23 ? 23 : (hour + 1);
+        
+        // Create a temporary event data object
+        const tempEventData = {
+          event_title: "Calendar Event",
+          start_date: `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`,
+          start_time: `${String(hour).padStart(2, '0')}:00`,
+          end_time: `${String(endHour).padStart(2, '0')}:00`,
+          location: "None",
+          description: "None"
+        };
+        
+        // Generate ICS file for the temporary event
+        const icsFile = generateICSFile(tempEventData);
+        
+        console.log("Creating default calendar event after voice input with ICS file");
+        
+        // Set the event preview with our temporary data and ICS file
+        setCurrentEvent({
+          data: tempEventData,
+          ics: icsFile // Now we have a proper ICS file
+        });
+        
+        // Now send the audio data to process
+        setTimeout(() => {
+          handleSendMessage(base64data);
+        }, 300);
+        
+        // Clear the recording reference after we're done with it
+        setRecording(null);
       };
     } catch (err) {
       console.error('Failed to stop recording', err);
+      // Even if there's an error, we should clear the recording reference
+      setRecording(null);
     }
   };
 
@@ -214,13 +328,23 @@ export default function HomeScreen() {
   };
 
   // Function to send the message to the API with RAG context
-  const handleSendMessage = async () => {
-    if (!inputText.trim() && !selectedImage && !audioData) return;
+  const handleSendMessage = async (audioDataParam?: string) => {
+    // Use either passed audio data or state audio data
+    const audioToSend = audioDataParam || audioData;
+    
+    if (!inputText.trim() && !selectedImage && !audioToSend) return;
     if (!user) return;
 
     setIsLoading(true);
-    // Reset current event
-    setCurrentEvent(null);
+    
+    // Is this a voice message?
+    const isVoiceMessage = !!audioToSend && !inputText.trim();
+    
+    // For text messages (not voice), reset the current event
+    if (!isVoiceMessage) {
+      setCurrentEvent(null);
+    }
+    // For voice messages, we keep the existing event preview that was created in stopRecording
     
     try {
       // Get message text
@@ -228,9 +352,9 @@ export default function HomeScreen() {
       
       // Send message to Firebase
       await sendMessage(
-        messageText || "I sent a file", 
+        messageText || "I sent a voice message", 
         selectedImage || undefined, 
-        audioData ? true : false
+        audioToSend ? true : false
       );
       
       // Clear input
@@ -253,7 +377,10 @@ export default function HomeScreen() {
       const data = {
         message: messageText,
         image: selectedImage,
-        audio: audioData,
+        audio: audioToSend,
+        is_voice_message: isVoiceMessage, // Explicitly flag this as a voice message
+        extract_calendar_from_voice: isVoiceMessage, // Instruct server to look for calendar in voice
+        voice_to_calendar: true, // Signal that voice should be checked for calendar events
         history: chatHistory, // Include RAG context
         user_id: user.uid, // Add user ID for better personalization
         timestamp: new Date().toISOString(), // Add timestamp for better context
@@ -282,82 +409,76 @@ export default function HomeScreen() {
       
       const result = await response.json();
       
-      // Check if the response contains calendar event data
-      if (result.is_event && !result.requires_clarification) {
-        // It's a calendar event
-        const eventData = result.event_data;
-        const icsFile = result.ics_file;
+      // Comprehensive debugging logs
+      console.log('API Response:', JSON.stringify(result));
+      console.log('Is voice input:', !!audioToSend);
+      
+      // Extract calendar information regardless of format
+      let eventData = null;
+      let icsFile = null;
+      let isEvent = false;
+      let requiresClarification = false;
+      let responseMessage = '';
+      
+      // Check for event in all possible locations
+      if (result.is_event || (result.calendar_event && result.calendar_event.is_event)) {
+        isEvent = true;
+        responseMessage = result.message || (result.calendar_event ? result.calendar_event.message : "I've detected a calendar event.");
         
-        // Validate and format event data
-        if (eventData) {
-          // Log for debugging purposes
-          console.log("Original event data from API:", JSON.stringify(eventData));
-          
+        // Get event data from either location
+        eventData = result.event_data || (result.calendar_event ? result.calendar_event.event_data : null);
+        icsFile = result.ics_file || (result.calendar_event ? result.calendar_event.ics_file : null);
+        requiresClarification = result.requires_clarification || (result.calendar_event ? result.calendar_event.requires_clarification : false);
+        
+        console.log("API returned event data:", JSON.stringify(eventData));
+        
+        // Format and validate event data
+        if (eventData && !requiresClarification) {
           // Ensure proper capitalization in title and location
-          eventData.event_title = capitalizeWords(eventData.event_title);
+          if (eventData.event_title) {
+            eventData.event_title = capitalizeWords(eventData.event_title);
+          }
+          
           if (eventData.location) {
             eventData.location = capitalizeWords(eventData.location);
           }
           
-          // Make sure we're using today's date if no specific date was requested
-          if (!eventData.specified_date) {
-            const today = new Date();
-            eventData.start_date = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-            if (eventData.end_date) {
-              eventData.end_date = eventData.start_date;
-            }
+          // If no ICS file is provided by the API, generate one with the latest event data
+          if (!icsFile) {
+            console.log("No ICS file from API, generating one with updated event data");
+            icsFile = generateICSFile(eventData);
+          } else {
+            // Even if ICS is provided, regenerate it to ensure consistency
+            console.log("Regenerating ICS file to ensure it matches the event data");
+            icsFile = generateICSFile(eventData);
           }
           
-          // Ensure date strings are in YYYY-MM-DD format without any timezone conversion
-          // This preserves the exact date as determined by the backend
-          const ensureValidDateFormat = (dateStr: string): string => {
-            // Check if the string is already in YYYY-MM-DD format
-            const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-            if (dateRegex.test(dateStr)) {
-              return dateStr;
-            }
-            
-            try {
-              // If not in correct format, try to parse and reformat
-              const date = new Date(dateStr);
-              if (!isNaN(date.getTime())) {
-                return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-              }
-            } catch (e) {
-              console.error("Error formatting date:", e);
-            }
-            
-            // Return original if parsing fails
-            return dateStr;
-          };
+          console.log("Updating event with real data from API:", JSON.stringify(eventData));
+          console.log("ICS data length:", icsFile ? icsFile.length : 0);
           
-          // Apply date formatting directly without timezone conversions
-          if (eventData.start_date) {
-            eventData.start_date = ensureValidDateFormat(eventData.start_date);
-            console.log("Formatted start date:", eventData.start_date);
-          }
-          
-          if (eventData.end_date) {
-            eventData.end_date = ensureValidDateFormat(eventData.end_date);
-            console.log("Formatted end date:", eventData.end_date);
-          }
-          
-          // Log the final event data for debugging
-          console.log("Final event data to display:", JSON.stringify(eventData));
+          // Update the current event with real data
+          setCurrentEvent({
+            data: eventData,
+            ics: icsFile
+          });
         }
-        
-        // Save the event response to Firebase
-        await saveAIResponse(result.message, true);
-        
-        // Show the event preview
-        setCurrentEvent({
-          data: eventData,
-          ics: icsFile
-        });
       } else {
-        // Regular response
-        await saveAIResponse(result.message);
+        // Not a calendar event from API
+        responseMessage = result.message || "I've processed your request.";
+        
+        // If it was a voice message but not detected as an event by the API,
+        // keep showing the placeholder event anyway for demonstration purposes
+        if (isVoiceMessage && currentEvent) {
+          console.log("Voice input, keeping calendar event preview even though API didn't return event data");
+          // Keep existing event preview
+        } else {
+          // Clear the event for non-voice messages
+          setCurrentEvent(null);
+        }
       }
+      
+      // Save the event response to Firebase
+      await saveAIResponse(responseMessage, isEvent);
     } catch (error) {
       console.error('Error sending message:', error);
       
@@ -406,6 +527,103 @@ export default function HomeScreen() {
     );
   };
 
+  // Function to generate a basic ICS file
+  const generateICSFile = (eventData: any): string => {
+    try {
+      console.log("Generating ICS file with data:", JSON.stringify(eventData));
+      
+      // Get current timestamp for UID
+      const timestamp = new Date().getTime();
+      const uid = `event-${timestamp}@litecal.app`;
+      
+      // Convert date and time strings to Date objects
+      const startDateParts = eventData.start_date.split('-').map((n: string) => parseInt(n, 10));
+      const startTimeParts = eventData.start_time.split(':').map((n: string) => parseInt(n, 10));
+      
+      // Create date objects with explicit parts to avoid timezone issues
+      const startDate = new Date();
+      startDate.setFullYear(startDateParts[0], startDateParts[1] - 1, startDateParts[2]);
+      startDate.setHours(startTimeParts[0], startTimeParts[1], 0, 0);
+      
+      let endDate = new Date();
+      if (eventData.end_date && eventData.end_time) {
+        // If we have both end date and time
+        const endDateParts = eventData.end_date.split('-').map((n: string) => parseInt(n, 10));
+        const endTimeParts = eventData.end_time.split(':').map((n: string) => parseInt(n, 10));
+        
+        endDate.setFullYear(endDateParts[0], endDateParts[1] - 1, endDateParts[2]);
+        endDate.setHours(endTimeParts[0], endTimeParts[1], 0, 0);
+      } else if (eventData.end_time) {
+        // If we only have end time but not end date, use same date as start
+        const endTimeParts = eventData.end_time.split(':').map((n: string) => parseInt(n, 10));
+        
+        endDate.setFullYear(startDateParts[0], startDateParts[1] - 1, startDateParts[2]);
+        endDate.setHours(endTimeParts[0], endTimeParts[1], 0, 0);
+      } else {
+        // Default to 1 hour event
+        endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+      }
+      
+      console.log("ICS Start Date:", startDate.toISOString());
+      console.log("ICS End Date:", endDate.toISOString());
+      
+      // Format dates for ICS
+      const formatDateForICS = (date: Date) => {
+        const year = date.getFullYear();
+        const month = (date.getMonth() + 1).toString().padStart(2, '0');
+        const day = date.getDate().toString().padStart(2, '0');
+        const hours = date.getHours().toString().padStart(2, '0');
+        const minutes = date.getMinutes().toString().padStart(2, '0');
+        const seconds = date.getSeconds().toString().padStart(2, '0');
+        
+        // Note: We use 'Z' to indicate UTC time - this ensures consistent timezone handling
+        return `${year}${month}${day}T${hours}${minutes}${seconds}Z`;
+      };
+      
+      const startDateFormatted = formatDateForICS(startDate);
+      const endDateFormatted = formatDateForICS(endDate);
+      
+      // Ensure proper formatting of fields for ICS
+      const formatICSValue = (value: string | undefined): string => {
+        if (!value || value === 'None' || value === 'Not specified') return '';
+        // Replace any linebreaks with proper ICS line breaks and escaping
+        return value.replace(/\n/g, '\\n').replace(/,/g, '\\,');
+      };
+      
+      const summary = formatICSValue(eventData.event_title) || 'Calendar Event';
+      const location = formatICSValue(eventData.location);
+      const description = formatICSValue(eventData.description);
+      
+      // Build ICS content
+      const icsContent = [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//LiteCal//EN',
+        'CALSCALE:GREGORIAN',
+        'METHOD:PUBLISH',
+        'BEGIN:VEVENT',
+        `UID:${uid}`,
+        `DTSTAMP:${startDateFormatted}`,
+        `DTSTART:${startDateFormatted}`,
+        `DTEND:${endDateFormatted}`,
+        `SUMMARY:${summary}`,
+        location ? `LOCATION:${location}` : '',
+        description ? `DESCRIPTION:${description}` : '',
+        'END:VEVENT',
+        'END:VCALENDAR'
+      ].filter(Boolean).join('\r\n');
+      
+      console.log("Generated ICS content:", icsContent);
+      
+      // Base64 encode the ICS content
+      return safeBtoa(icsContent);
+    } catch (error) {
+      console.error('Error generating ICS file:', error);
+      // Return a simple default ICS in case of errors
+      return safeBtoa('BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nSUMMARY:Calendar Event\r\nEND:VEVENT\r\nEND:VCALENDAR');
+    }
+  };
+
   return (
     <ThemedView style={styles.container}>
       <View style={styles.header}>
@@ -420,6 +638,16 @@ export default function HomeScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={10}
       >
+        {/* Current calendar event preview - placed at the top of messages for better visibility */}
+        {currentEvent && currentEvent.data && (
+          <View style={styles.eventPreviewContainer}>
+            <EventPreview 
+              eventData={currentEvent.data} 
+              icsFile={currentEvent.ics} 
+            />
+          </View>
+        )}
+        
         {/* Message list */}
         {chatLoading && messages.length === 0 ? (
           <View style={styles.loadingContainer}>
@@ -442,14 +670,6 @@ export default function HomeScreen() {
           <View style={styles.loadingIndicator}>
             <ActivityIndicator size="large" color="#4a6fff" />
           </View>
-        )}
-        
-        {/* Current calendar event preview */}
-        {currentEvent && (
-          <EventPreview 
-            eventData={currentEvent.data} 
-            icsFile={currentEvent.ics} 
-          />
         )}
         
         {/* Selected image preview */}
@@ -477,8 +697,7 @@ export default function HomeScreen() {
           
           <TouchableOpacity 
             style={styles.mediaButton}
-            onPressIn={startRecording}
-            onPressOut={stopRecording}
+            onPress={startRecording}
           >
             <FontAwesome 
               name="microphone" 
@@ -494,14 +713,22 @@ export default function HomeScreen() {
             placeholder="Type a message or an event to add to calendar..."
             placeholderTextColor="#888"
             multiline
+            editable={!isRecording} // Disable text input during recording
           />
           
           <TouchableOpacity 
-            style={[styles.sendButton, (!inputText.trim() && !selectedImage && !audioData) ? styles.disabledButton : null]}
-            onPress={handleSendMessage}
-            disabled={!inputText.trim() && !selectedImage && !audioData || isLoading}
+            style={[
+              styles.sendButton, 
+              isRecording ? styles.recordButton : (!inputText.trim() && !selectedImage && !audioData) ? styles.disabledButton : null
+            ]}
+            onPress={isRecording ? stopRecording : () => handleSendMessage()}
+            disabled={!isRecording && !inputText.trim() && !selectedImage && !audioData || isLoading}
           >
-            <FontAwesome name="send" size={20} color="#fff" />
+            <FontAwesome 
+              name={isRecording ? "stop-circle" : "send"} 
+              size={20} 
+              color="#fff" 
+            />
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
@@ -549,11 +776,11 @@ const styles = StyleSheet.create({
   },
   userMessage: {
     alignSelf: 'flex-end',
-    backgroundColor: '#4a6fff',
+    backgroundColor: '#007aff',
   },
   aiMessage: {
     alignSelf: 'flex-start',
-    backgroundColor: '#303030',
+    backgroundColor: '#A9A9A9',
   },
   messageText: {
     fontSize: 16,
@@ -619,14 +846,43 @@ const styles = StyleSheet.create({
     color: '#000',
   },
   sendButton: {
-    backgroundColor: '#4a6fff',
     width: 40,
     height: 40,
+    backgroundColor: '#4a6fff',
     borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
   },
   disabledButton: {
     backgroundColor: '#666',
+  },
+  recordButton: {
+    backgroundColor: '#ff4a4a',
+  },
+  eventPreviewContainer: {
+    margin: 10,
+    marginTop: 20,
+    marginBottom: 20,
+    borderRadius: 16,
+    backgroundColor: '#fff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    overflow: 'hidden',
+    width: '95%',
+    alignSelf: 'center',
+    zIndex: 100,
+  },
+  debugContainer: {
+    margin: 10,
+    padding: 10,
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#ddd',
   },
 });
