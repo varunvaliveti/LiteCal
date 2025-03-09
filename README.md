@@ -1,6 +1,6 @@
-# LiteCal - AI Calendar Assistant
+# AutoCal - AI Calendar Assistant
 
-LiteCal is a React Native mobile app that helps users manage calendar events using natural language. The app uses AI to interpret user requests and create calendar events automatically.
+AutoCal is a React Native mobile app that helps users manage calendar events using natural language. The app uses AI to interpret user requests and create calendar events automatically.
 
 ## Project Structure
 
