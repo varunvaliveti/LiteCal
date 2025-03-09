@@ -21,4 +21,4 @@ ENV EXPO_DEVTOOLS_LISTEN_ADDRESS=0.0.0.0
 ENV REACT_NATIVE_PACKAGER_HOSTNAME=0.0.0.0
 
 # Start the Expo development server
-CMD ["npm", "start"]
+CMD ["npx", "expo", "start", "--clear"]
