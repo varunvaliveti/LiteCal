@@ -13,7 +13,6 @@ import requests
 from typing import Optional
 from dataclasses import dataclass
 import functools
-import web3
 
 load_dotenv()
 app = Flask(__name__)
