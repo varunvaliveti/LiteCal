@@ -13,6 +13,7 @@ import requests
 from typing import Optional
 from dataclasses import dataclass
 import functools
+import web3
 
 load_dotenv()
 app = Flask(__name__)
@@ -21,8 +22,19 @@ CORS(app)  # Enable CORS for all routes
 # Configure the Gemini API with your API key
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
-# Initialize the model - use gemini-1.5-pro for multimodal capabilities
+# Initialize the model with Ethereum context
 model = genai.GenerativeModel('gemini-2.0-flash')
+
+# Ethereum dataset context
+ETHEREUM_CONTEXT = """
+You are analyzing calendar events in the context of Ethereum blockchain data.
+Consider the following when processing events:
+1. Check for blockchain-related keywords (e.g., ETH, gas, transactions)
+2. Verify if event times align with typical blockchain activity periods
+3. Consider timezone implications for global blockchain events
+4. Look for DeFi-related scheduling patterns
+5. Consider gas price optimization for transaction timing
+"""
 
 # Add these new TEE configurations
 TEE_CONFIG = {
@@ -76,7 +88,7 @@ def require_tee(func):
         return await func(*args, **kwargs)
     return wrapper
 
-# Function to parse calendar event information
+# Function to parse calendar event information with Ethereum context
 @require_tee
 async def parse_calendar_event(user_message, chat_history=None):
     context = ""
@@ -88,6 +100,8 @@ async def parse_calendar_event(user_message, chat_history=None):
     # print(current_date)
     
     prompt = f"""
+    {ETHEREUM_CONTEXT}
+    
     {context}
     User message: "{user_message}"
     
@@ -95,32 +109,29 @@ async def parse_calendar_event(user_message, chat_history=None):
     
     If this message describes a calendar event, extract the following information in JSON format:
     {{
-        "is_event": true or false (whether this is a calendar event request),
-        "event_title": "Title of the event" (ensure proper capitalization),
-        "start_date": "YYYY-MM-DD" (if not specified, use today's date: {current_date}),
-        "start_time": "HH:MM" (in 24-hour format, default to a business hour if not specified),
-        "end_date": "YYYY-MM-DD" (can be the same as start_date for single-day events),
-        "end_time": "HH:MM" (in 24-hour format, if not specified, assume 1 hour after start_time),
-        "location": "Location of the event" (ensure proper capitalization),
-        "description": "Description or notes for the event" (ensure proper grammar and capitalization),
-        "attendees": ["email1@example.com", "email2@example.com"] (optional, can be empty),
-        "requires_clarification": true or false (if something is ambiguous),
-        "clarification_question": "Question to ask for clarification" (only if requires_clarification is true),
-        "specified_date": true or false (whether the user specifically mentioned a date)
+        "is_event": true or false,
+        "event_title": "Title of the event",
+        "start_date": "YYYY-MM-DD",
+        "start_time": "HH:MM",
+        "end_date": "YYYY-MM-DD",
+        "end_time": "HH:MM",
+        "location": "Location of the event",
+        "description": "Description or notes for the event",
+        "attendees": ["email1@example.com"],
+        "requires_clarification": true or false,
+        "clarification_question": "Question to ask for clarification",
+        "specified_date": true or false,
+        "blockchain_related": true or false,
+        "gas_price_check_needed": true or false,
+        "defi_related": true or false
     }}
     
-    If this message doesn't describe a calendar event or is inappropriate, just return:
-    {{
-        "is_event": false
-    }}
-    
-    Pay special attention to the following:
-    1. Use proper capitalization for event titles (e.g., "Team Meeting" not "team meeting")
-    2. Use proper capitalization for locations (e.g., "Conference Room A" not "conference room a")
-    3. If no date is specified, use today's date: {current_date}
-    4. Ensure the description has proper grammar and capitalization
-    
-    Reply with only the JSON object, no other text.
+    Pay special attention to:
+    1. Blockchain-related keywords and context
+    2. DeFi protocol names or references
+    3. Gas price considerations for transaction timing
+    4. Global timezone implications
+    5. Smart contract deployment windows
     """
     
     response = model.generate_content(prompt)
