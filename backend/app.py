@@ -9,6 +9,10 @@ from datetime import datetime, timedelta
 import uuid
 import json
 import re
+import requests
+from typing import Optional
+from dataclasses import dataclass
+import functools
 
 load_dotenv()
 app = Flask(__name__)
@@ -20,8 +24,61 @@ genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 # Initialize the model - use gemini-1.5-pro for multimodal capabilities
 model = genai.GenerativeModel('gemini-2.0-flash')
 
+# Add these new TEE configurations
+TEE_CONFIG = {
+    'attestation_endpoint': 'http://metadata.google.internal/computeMetadata/v1/instance/attestation-token',
+    'cpu_type': 'AMD',
+    'tee_type': 'SEV-SNP',
+    'required_version': '1.0'
+}
+
+# Add TEE verification class
+class TEEVerification:
+    _instance = None
+    _attestation_token = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(TEEVerification, cls).__new__(cls)
+        return cls._instance
+
+    async def get_attestation_token(self) -> Optional[str]:
+        if self._attestation_token:
+            return self._attestation_token
+
+        try:
+            response = requests.get(
+                TEE_CONFIG['attestation_endpoint'],
+                headers={'Metadata-Flavor': 'Google'},
+                timeout=5
+            )
+            if response.status_code == 200:
+                self._attestation_token = response.text
+                return self._attestation_token
+        except Exception as e:
+            print(f"TEE Attestation failed: {e}")
+        return None
+
+    async def is_running_in_tee(self) -> bool:
+        token = await self.get_attestation_token()
+        return token is not None
+
+# Initialize TEE verification
+tee = TEEVerification()
+
+# Decorator for secure operations
+def require_tee(func):
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        in_tee = await tee.is_running_in_tee()
+        if not in_tee:
+            print(f"Warning: {func.__name__} running outside TEE")
+        return await func(*args, **kwargs)
+    return wrapper
+
 # Function to parse calendar event information
-def parse_calendar_event(user_message, chat_history=None):
+@require_tee
+async def parse_calendar_event(user_message, chat_history=None):
     context = ""
     if chat_history:
         context = f"Previous conversation context:\n{chat_history}\n\n"
@@ -243,7 +300,12 @@ def fix_description_text(text):
     return ' '.join(fixed_sentences)
 
 @app.route('/chat', methods=['POST'])
-def chat():
+@require_tee
+async def chat():
+    # Get TEE status
+    in_tee = await tee.is_running_in_tee()
+    attestation_token = await tee.get_attestation_token()
+
     # Get the data from the request
     data = request.json
     user_message = data.get('message', '')
@@ -259,7 +321,7 @@ def chat():
     
     try:
         # Check if the message appears to be a calendar event request
-        event_data = parse_calendar_event(user_message, chat_history)
+        event_data = await parse_calendar_event(user_message, chat_history)
         
         # If this is a calendar event and no clarification needed, generate ICS
         if event_data.get('is_event', False):
@@ -300,7 +362,13 @@ def chat():
                     'message': friendly_response.strip(),
                     'is_event': True,
                     'event_data': event_data,
-                    'ics_file': base64.b64encode(ics_content.encode('utf-8')).decode('utf-8')
+                    'ics_file': base64.b64encode(ics_content.encode('utf-8')).decode('utf-8'),
+                    'tee_status': {
+                        'in_tee': in_tee,
+                        'attestation_available': attestation_token is not None,
+                        'tee_type': TEE_CONFIG['tee_type'],
+                        'cpu_type': TEE_CONFIG['cpu_type']
+                    }
                 })
 
         # If not a calendar event or inappropriate, process normally
@@ -402,4 +470,12 @@ def format_date_long(date_str):
         return date_str
 
 if __name__ == '__main__':
+    # Initialize TEE verification on startup
+    import asyncio
+    loop = asyncio.get_event_loop()
+    tee_status = loop.run_until_complete(tee.is_running_in_tee())
+    print(f"Running in TEE: {tee_status}")
+    print(f"TEE Type: {TEE_CONFIG['tee_type']}")
+    print(f"CPU Type: {TEE_CONFIG['cpu_type']}")
+    
     app.run(host='0.0.0.0', port=5001, debug=True)

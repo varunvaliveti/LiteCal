@@ -37,4 +37,8 @@ yarn-error.*
 *.tsbuildinfo
 
 app-example
-.venv
+venv/
+env/
+ENV/
+.env
+app/backend/venv
